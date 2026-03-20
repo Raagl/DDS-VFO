@@ -1,62 +1,64 @@
+library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.NUMERIC_STD.ALL;
--- Uncomment the following library declaration if using
--- arithmetic functions with Signed or Unsigned values
 
+entity top is
+    port (
+        clk  : in std_logic;
+        rst  : in std_logic;
+        RX   : in std_logic; -- Physical UART Input
+        WAVE : out std_logic_vector(7 downto 0) -- To R-2R Ladder
+    );
+end top;
 
--- Uncomment the following library declaration if instantiating
--- any Xilinx leaf cells in this code.
---library UNISIM;
---use UNISIM.VComponents.all;
+architecture Behavioral of top is
+    signal freq_in_wire  : unsigned(31 downto 0) := (others => '0');
+    signal running_total : unsigned(31 downto 0) := (others => '0');
+    signal dds_result    : std_logic_vector(7 downto 0);
 
-entity dds is
-Port 
-(	
-	CLK_100MHZ : in std_logic;
-	RST : in std_logic;
-	PHASE_INC : in std_logic_vector (31 downto 0);
-	WAVE : out std_logic_vector (7 downto 0)
-);
-end dds;
+    signal rx_byte_wire  : std_logic_vector(7 downto 0);
+    signal rx_avail_wire : std_logic;
 
-architecture nco of dds is
-signal phase_accumulator : unsigned(31 downto 0) := (others => '0');
-type LUT_TYPE is array(0 to 255) of integer;
-
-constant sine_lut : LUT_TYPE := (
-								128,131,134,137,140,143,146,149,152,155,158,162,165,167,170,173,
-								176,179,182,185,188,190,193,196,198,201,203,206,208,211,213,215,
-								218,220,222,224,226,228,230,232,234,235,237,238,240,241,243,244,
-								245,246,248,249,250,250,251,252,253,253,254,254,254,255,255,255,
-								255,255,255,255,254,254,254,253,253,252,251,250,250,249,248,246,
-								245,244,243,241,240,238,237,235,234,232,230,228,226,224,222,220,
-								218,215,213,211,208,206,203,201,198,196,193,190,188,185,182,179,
-								176,173,170,167,165,162,158,155,152,149,146,143,140,137,134,131,
-								128,124,121,118,115,112,109,106,103,100,97,93,90,88,85,82,
-								79,76,73,70,67,65,62,59,57,54,52,49,47,44,42,40,
-								37,35,33,31,29,27,25,23,21,20,18,17,15,14,12,11,
-								10,9,7,6,5,5,4,3,2,2,1,1,1,0,0,0,
-								0,0,0,0,1,1,1,2,2,3,4,5,5,6,7,9,
-								10,11,12,14,15,17,18,20,21,23,25,27,29,31,33,35,
-								37,40,42,44,47,49,52,54,57,59,62,65,67,70,73,76,
-								79,82,85,88,90,93,97,100,103,106,109,112,115,118,121,124
-								);
-
-begin      
-
-process (CLK_100MHZ, RST)
-variable lut_address : integer range 0 to 255;
 begin
-	if RST = '1' then
-		phase_accumulator <= (others => '0');
-		WAVE <= std_logic_vector(to_unsigned (128, 8));
-		
-	elsif CLK_100MHZ'event and CLK_100MHZ = '1' then
-		phase_accumulator <= phase_accumulator + Unsigned(PHASE_INC);
-		lut_address := to_integer(phase_accumulator(31 downto 24));
-		WAVE <= std_logic_vector(to_unsigned(sine_lut(lut_address), 8));
-		
-	end if;
-end process;
+    WAVE <= dds_result;
 
-end nco;
+    U_DDS : entity work.dds 
+        port map (
+            clk     => clk,
+            rst     => rst,
+            freq_in => std_logic_vector(freq_in_wire),
+            WAVE    => dds_result
+        );
+    
+    U_RX : entity work.rx_mod 
+        generic map (CLK_PER_BIT => 434)
+        port map (
+            clk        => clk,
+            rst        => rst,
+            I_RX       => RX,
+            DATA_AVAIL => rx_avail_wire,
+            DATA_BYTE  => rx_byte_wire
+        );
+
+    ASCII_PRO : process (clk, rst)
+        variable digit_var : integer;
+    begin
+        if rst = '1' then
+            running_total <= (others => '0');
+            freq_in_wire  <= (others => '0');
+        elsif rising_edge(clk) then 
+            if rx_avail_wire = '1' then
+                -- Build frequency from '0'-'9'
+                if rx_byte_wire >= x"30" and rx_byte_wire <= x"39" then
+                    digit_var := to_integer(unsigned(rx_byte_wire) - x"30");
+                    running_total <= (running_total * 10) + to_unsigned(digit_var, 32);
+                                     
+                -- Latch on 'Enter'
+                elsif rx_byte_wire = x"0D" or rx_byte_wire = x"0A" then
+                    freq_in_wire  <= running_total;
+                    running_total <= (others => '0');
+                end if;
+            end if;
+        end if;
+    end process;
+end Behavioral;
