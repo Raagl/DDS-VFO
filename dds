@@ -1,33 +1,41 @@
 -- DDS (Direct Digital Synthesizer) Implementation in VHDL
 -- First Symmetry: Use LUT for 0 to 90 degrees, mirror for 90 to 180
 -- Second Symmetry: Use sign bit to invert output for 180 to 360 degrees
--- 3 stage pipeline: Accumulator Update, BRAM Read, Output Calculation
+-- 2 stage pipeline: Accumulator Update, BRAM Read
 -- 32 bit phase accumulator, 512 x 10 bit BRAM
+-- Dual port BRAM for interpolation, send current and next address
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.NUMERIC_STD.ALL;
 
 entity dds is
     port (
-        clk     : in std_logic;
-        rst     : in std_logic;
-        phase_inc : in std_logic_vector(31 downto 0);
-        WAVE    : out std_logic_vector(9 downto 0)
+        clk         : in std_logic;
+        rst         : in std_logic;
+        phase_inc   : in std_logic_vector(31 downto 0);
+        y1_out      : out std_logic_vector(9 downto 0); -- Current sample from LUT
+        y2_out      : out std_logic_vector(9 downto 0); -- Next sample from LUT for interpolation
+        sign_bit2   : out std_logic;                    -- Delayed sign bit for output inversion
+        frac_bit2   : out std_logic_vector(3 downto 0)  -- Delayed fractional bits for interpolation
     );
 end dds;
 
 architecture nco of dds is
 
+    -- Internal Signals
     signal phase_accumulator : unsigned(31 downto 0) := (others => '0');
 
-    signal sign_bit : std_logic;
-    signal lut_addr_reg : integer range 0 to 511;
-    
-    signal bram_out_reg : integer range 0 to 1023;
-    -- 2 clock cycle delay for sign bit to align with BRAM output
-    signal sign_bit_delay : std_logic;
+    -- Signals for pipelining
+    signal sign_bit1 : std_logic; -- Top bit of phase accumulator for 180 degree symmetry
+    signal sign_bit2 : std_logic; -- Delayed sign bit to align with BRAM output for final output inversion
+    signal frac_bit1 : std_logic_vector(3 downto 0); -- 4-bit Fractional bit for interpolation
+    signal frac_bit2 : std_logic_vector(3 downto 0); -- Delayed 4-bit fractional bit to align with BRAM output for interpolation
 
-    -- BRAM (512 x 10 bits) for sine wave samples, only 256 unique values due to symmetry
+    -- Signals for BRAM read address
+    signal addr1 : integer range 0 to 511; -- Address for current sample
+    signal addr2 : integer range 0 to 511; -- Address for next sample (for interpolation)
+    
+    -- BRAM (512 x 10 bits) for sine wave samples, only 1024 unique values due to symmetry
     type LUT_TYPE is array(0 to 511) of integer range 0 to 1023;
     constant sine_lut : LUT_TYPE := (
         0,    3,    6,    9,   13,   16,   19,   22, 
@@ -97,22 +105,26 @@ architecture nco of dds is
     );
 begin      
     ACCUMULATOR_PROC : process(clk)
+        variable current_idx : unsigned(8 downto 0);
     begin
         if rising_edge(clk) then
             if rst = '1' then
                 phase_accumulator <= (others => '0');
             else
                 phase_accumulator <= phase_accumulator + unsigned(phase_inc);
-                
-                -- Store Top bit : 0 for 0-180 degrees, 1 for 180-360 degrees
-                sign_bit <= phase_accumulator(31);
-
-                -- First symmetry: use absolute value of address for LUT indexing
+                current_idx := phase_accumulator(29 downto 21); -- Take the top 9 bits after the sign bit for LUT address
+                -- First symmetry: Use LUT for 0 to 90 degrees if '1', else mirror for 90 to 180
                 if phase_accumulator(30) = '1' then
-                    lut_addr_reg <= to_integer(not phase_accumulator(29 downto 21));
+                    addr1 <= to_integer(not current_idx); --take 9 bits for 512 entry LUT, invert for 90-180 degree range
+                    addr2 <= to_integer(not current_idx - 1); --next address for interpolation    
                 else
-                    lut_addr_reg <= to_integer(phase_accumulator(29 downto 21));
+                    addr1 <= to_integer(current_idx);
+                    addr2 <= to_integer(current_idx + 1);
                 end if;
+
+                -- Pipelining for BRAM read and output calculation
+                sign_bit1 <= phase_accumulator(31); -- Store Top bit : 0 for 0-180 degrees, 1 for 180-360 degrees
+                frac_bit1 <= std_logic_vector(phase_accumulator(20 downto 17)); -- Use 4 bits as fractional bit for interpolation (512 entry LUT)
             end if;
         end if;
     end process;
@@ -121,26 +133,10 @@ begin
     begin
         if rising_edge(clk) then
             -- Read from block RAM and delay sign bit
-            bram_out_reg <= sine_lut(lut_addr_reg);
-            sign_bit_delay <= sign_bit;
+            y1_out <= std_logic_vector(to_unsigned(to_integer(sine_lut(addr1)), 10));
+            y2_out <= std_logic_vector(to_unsigned(to_integer(sine_lut(addr2)), 10));
+            sign_bit2 <= sign_bit1; -- Delay sign bit by 2 clock cycle to align with BRAM output
+            frac_bit2 <= frac_bit1; -- Delay fractional bits by 2 clock cycle to align with BRAM output
         end if;
     end process;
-
-    OUTPUT_PROC : process(clk)
-        variable output_val : signed(10 downto 0);
-    begin
-        if rising_edge(clk) then
-            -- Extend BRAM output to 11 bits for sign handling
-            output_val := signed('0' & to_unsigned(bram_out_reg, 10)); 
-
-            -- Second symmetry: invert output if sign bit is set
-            if sign_bit_delay = '1' then
-                output_val := -output_val;
-            end if;
-
-            -- Apply Offset (128) for R-2R Output
-            WAVE <= std_logic_vector(to_unsigned(to_integer(output_val +  512), 10));
-        end if;
-    end process;
-
 end nco;

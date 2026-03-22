@@ -8,7 +8,7 @@ entity top is
         rst  : in std_logic;
         vauxp6 : in  std_logic; -- J3
         vauxn6 : in  std_logic; -- K3
-        WAVE : out std_logic_vector(9 downto 0) -- To R-2R Ladder
+        WAVE : out std_logic_vector(9 downto 0) 
     );
 end top;
 
@@ -17,8 +17,11 @@ architecture Behavioral of top is
     signal xadc_do    : std_logic_vector(15 downto 0);
     signal xadc_drdy  : std_logic;
 
+    -- DDS Signals
+    signal y1_out_reg, y2_out_reg : std_logic_vector(9 downto 0);  
+    signal frac_bit2_reg : std_logic_vector(3 downto 0);
+    signal sign_bit2_reg : std_logic;
     signal phase_inc_reg  : unsigned(31 downto 0) := (others => '0');
-    signal dds_result    : std_logic_vector(9 downto 0);
 
     component xadc_wiz_0 is 
         port
@@ -47,14 +50,20 @@ architecture Behavioral of top is
         end component;
 
 begin
-    WAVE <= dds_result;
+    y1_out <= y1_out_reg;
+    y2_out <= y2_out_reg;
+    sign_bit2 <= sign_bit2_reg;
+    frac_bit2 <= frac_bit2_reg;
 
     U_DDS : entity work.dds 
         port map (
             clk     => clk,
             rst     => rst,
             phase_inc => std_logic_vector(phase_inc_reg),
-            WAVE    => dds_result
+            y1_out  => y1_out_reg,
+            y2_out  => y2_out_reg,
+            sign_bit2   => sign_bit2_reg,
+            frac_bit2   => frac_bit2_reg
         );
 
     U_XADC : xadc_wiz_0
@@ -98,5 +107,36 @@ begin
                 phase_inc_reg <= calc_64(31 downto 0);
                 end if;
             end if;
+    end process;
+
+    INTERPOLATION_PROC : process(clk)
+        variable weight1, weight2 : unsigned(4 downto 0);   -- 5 bits ( 4 fractional bit + 1 bit to handle potential carry) to represent weights for interpolation (16 - frac and frac)
+        variable multi1, multi2 : unsigned(14 downto 0);    -- 10 bits from LUT + 4 bits fractional + 1 bit for potential carry 
+        variable sum : unsigned(15 downto 0);               -- 15 bits to hold the sum of the two products
+        variable interpolated_result : signed(10 downto 0); -- Final interpolated result
+    begin
+        if rising_edge(clk) then
+            -- Interpolation logic can be added here if needed
+            -- Formula: y = ((16-frac) * LUT[addr] + frac * LUT[addr+1]) / 16
+
+            weight1 := to_unsigned(16, 5) - unsigned("0" & frac_bit2_reg);  --(16 - frac)
+            weight2 := unsigned("0" & frac_bit2_reg); -- frac
+
+            multi1 := weight1 * unsigned(y1_out_reg);
+            multi2 := weight2 * unsigned(y2_out_reg);
+
+            sum := resize(multi1, 16) + resize(multi2, 16);
+
+            -- Divide by 16 (right shift by 4) and convert to signed for potential inversion
+            interpolated_result := signed("0" & sum(13 downto 4)); -- Divide by 16
+
+            -- Invert output if in 180-360 degree range
+            if sign_bit2_reg = '1' then
+                interpolated_result <= std_logic_vector(-interpolated_result); 
+            end if;
+
+            -- Final output with offset to make it unsigned (0 to 1023)
+            WAVE <= std_logic_vector(to_unsigned(to_integer(interpolated_result + 512), 10));
+        end if;
     end process;
 end Behavioral;
