@@ -27,9 +27,7 @@ architecture nco of dds is
 
     -- Signals for pipelining
     signal sign_bit1 : std_logic; -- Top bit of phase accumulator for 180 degree symmetry
-    signal sign_bit2 : std_logic; -- Delayed sign bit to align with BRAM output for final output inversion
     signal frac_bit1 : std_logic_vector(3 downto 0); -- 4-bit Fractional bit for interpolation
-    signal frac_bit2 : std_logic_vector(3 downto 0); -- Delayed 4-bit fractional bit to align with BRAM output for interpolation
 
     -- Signals for BRAM read address
     signal addr1 : integer range 0 to 511; -- Address for current sample
@@ -133,8 +131,8 @@ begin
     begin
         if rising_edge(clk) then
             -- Read from block RAM and delay sign bit
-            y1_out <= std_logic_vector(to_unsigned(to_integer(sine_lut(addr1)), 10));
-            y2_out <= std_logic_vector(to_unsigned(to_integer(sine_lut(addr2)), 10));
+            y1_out <= std_logic_vector(to_unsigned(sine_lut(addr1), 10));
+            y2_out <= std_logic_vector(to_unsigned(sine_lut(addr2), 10));
             sign_bit2 <= sign_bit1; -- Delay sign bit by 2 clock cycle to align with BRAM output
             frac_bit2 <= frac_bit1; -- Delay fractional bits by 2 clock cycle to align with BRAM output
         end if;
